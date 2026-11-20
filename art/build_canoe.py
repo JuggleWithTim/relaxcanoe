@@ -60,7 +60,7 @@ def material(name, rgb, roughness, metal=0, texture=None):
         m.node_tree.links.new(node.outputs['Color'], shader.inputs['Base Color'])
     return m
 
-grain = material('Oiled boat timber', (.55,.31,.14), .43, texture=timber_atlas())
+grain = material('Oiled boat timber', (.55,.31,.14), .62, texture=timber_atlas())
 brass = material('Aged silicon bronze', (.32,.21,.077), .32, .76)
 cane = material('Seat cane', (.35,.215,.104), .68)
 cord = material('Tarred painter', (.067,.052,.036), .92)
@@ -157,16 +157,23 @@ for end in (stern,bow):
     face(ring)
     tube(ring,.010,row=25,sides=6)
 
-# Bent ribs follow the inner skin. Tangent offsets keep their top faces flush.
-for y in np.arange(stern+.23,bow-.12,.31):
-    for j in range(28):
-        a=(j/28-.5)*math.pi*.965
-        b=((j+1)/28-.5)*math.pi*.965
-        def rib(yy,phi):
-            x,_,z=hull(yy,phi,True)
-            return (x-.006*math.sin(phi),yy,z+.007*math.cos(phi))
-        pts=[rib(y-.014,a),rib(y-.014,b),rib(y+.014,b),rib(y+.014,a)]
-        quad(pts,20+(j//12)%3,j/28,(j+1)/28)
+# Low ash runners on the floor protect the cedar under the seats. Their
+# tapered ends meet the planking as the bilge turns into the ends.
+for side in (-1,1):
+    runner=[]
+    for i in range(39):
+        t=i/38
+        y=stern+.73+(bow-stern-1.59)*t
+        lift=.011*min(1, t*15, (1-t)*15)
+        row=[]
+        for phi,height in [(0.48,0),(.49,lift),(.57,lift),(.58,0)]:
+            x,_,z=hull(y,phi*side,True)
+            row.append((x-height*math.sin(phi)*side,y,z+height))
+        runner.append(row)
+    for i,(a,b) in enumerate(zip(runner,runner[1:])):
+        for j in range(3):
+            points=[a[j],b[j],b[j+1],a[j+1]]
+            quad(points if side<0 else points[::-1],23,i/38,(i+1)/38)
 # Keelson protects the bottom inside.
 tube([(0,stern+.07+(bow-stern-.14)*i/sections,hull(stern+.07+(bow-stern-.14)*i/sections,0,True)[2]+.005) for i in range(sections+1)],.012,25)
 
@@ -256,7 +263,7 @@ for i,((a,wa,da),(b,wb,db)) in enumerate(zip(profile,profile[1:])):
     for r in (-1,1):
         quad([blade(a,wa,da,r,-1),blade(b,wb,db,r,-1),blade(b,wb,db,r,1),blade(a,wa,da,r,1)],25)
 # Pear-shaped palm grip.
-grip=[(-.085,.015,.015),(-.052,.023,.018),(-.031,.043,.019),(-.010,.050,.018),(.008,.043,.014),(.016,.027,.009),(.019,.0008,.0008)]
+grip=[(-.085,.015,.015),(-.052,.023,.018),(-.031,.036,.017),(-.010,.042,.017),(.008,.037,.014),(.016,.023,.009),(.019,.0008,.0008)]
 for i,((a,wa,da),(b,wb,db)) in enumerate(zip(grip,grip[1:])):
     for n in range(16):
         def gp(z,w,d,j): return (w*math.cos(j*math.tau/16),d*math.sin(j*math.tau/16),z)
@@ -268,6 +275,8 @@ for name in ('Hull','Paddle'):
     for (part, mat),(verts,faces,uvs,shading) in parts.items():
         if part!=name: continue
         mesh=bpy.data.meshes.new(name+' '+mat.name)
+        if part=='Paddle':
+            verts = [(x,y,z + max(0, min(.145, (-z-.10)*.22))) for x,y,z in verts]
         mesh.from_pydata(verts,[],faces)
         mesh.update()
         uv=mesh.uv_layers.new(name='Grain')
