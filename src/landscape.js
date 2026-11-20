@@ -1,22 +1,12 @@
+import { centerX, riverWidth } from './course.js';
 import * as THREE from 'three';
-import { closeBankTrees } from './riverbank-trees.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { closeBankTrees, nearTreeLayout } from './riverbank-trees.js';
 
 // Distances follow the river downstream. A bank offset of zero is the waterline.
 const TAU = Math.PI * 2;
 const SECTION = 48;
 const assets = '/assets/terrain/';
-const startX = 11 * Math.sin(-0.6) + 24 * Math.sin(0.5) + 3.5 * Math.sin(0.5);
-
-export function centerX(s) {
-  return 11 * Math.sin(s * 0.014 - 0.6) + 24 * Math.sin(s * 0.0057 + 0.5)
-    + 3.5 * Math.sin(s * 0.029 + 0.5) - startX;
-}
-
-export function riverWidth(s) {
-  return 16.4 + 3.2 * Math.sin(s * 0.021 + 0.1) + 2.3 * Math.sin(s * 0.009 - 0.2)
-    + 0.65 * Math.sin(s * 0.067);
-}
-
 function hash(x, y) {
   let n = Math.imul(x, 374761393) + Math.imul(y, 668265263);
   n = Math.imul(n ^ (n >>> 13), 1274126177);
@@ -146,7 +136,7 @@ function makeBanks(start, detail, material) {
   return mesh;
 }
 
-function makeForest(start, detail, material) {
+function makeForest(start, detail, material, nearTrees) {
   const pos = [], idx = [], uv = [], offsets = [], colors = [];
   const ratios = [0.352, 0.492, 0.445, 0.322];
   const random = rng(hash(start, 181) * 4294967295);
@@ -176,7 +166,7 @@ function makeForest(start, detail, material) {
       const width = h * ratios[type] * (0.87 + 0.47*widthRandom);
       const clearing = noise(x*0.048,s*0.048);
       const shade = 0.72 + 0.36 * noise(x*0.08, s*0.08) + 0.10 * hRandom;
-      const keep = (detail > 0 || d > 9.5) && thinning > (detail === 2 ? 0.43 : detail === 1 ? 0.14 : 0);
+      const keep = d > 9.5 && thinning > (detail === 2 ? 0.43 : detail === 1 ? 0.14 : 0);
       // Consume sprite RNG regardless of detail so retained silhouettes coincide.
       if (keep && (d > 9 || clearing > 0.39) && (clearing > 0.23 || hRandom > 0.72)) {
         plant(x,groundHeight(s,d,side)-0.12,s,h,width,type,shade);
@@ -185,10 +175,13 @@ function makeForest(start, detail, material) {
     for (let i = 0; i < 75; i++) {
       const s = start + random()*SECTION, d = 2.3 + random()*13;
       const x = centerX(s) + side*(riverWidth(s)+d), h = 0.7 + 2.9*random();
-      const type = random() < 0.55 ? 2 : 3;
-      if (detail < 2) plant(x,groundHeight(s,d,side)-0.03,s,h,h*(0.70+random()*0.37),type,0.93);
+      const type = random() < 0.74 ? 2 : 3;
+      if (detail < 2) plant(x,groundHeight(s,d,side)-0.03,s,h,h*(0.70+random()*0.37),type,0.72);
       else {random();random();random();}
     }
+  }
+  if(detail>0) {
+    for(const {base,height} of nearTrees) plant(base.x,base.y,-base.z,height,height*0.40,0,0.93);
   }
   const g = geometry(pos,idx,{offset:[offsets,2],uv:[uv,2],color:[colors,3]});
   g.computeBoundingSphere();
@@ -227,6 +220,7 @@ function makeRocks(start, detail, material, shape) {
     mesh.setColorAt(i,tint.setRGB(tone*0.90,tone*0.94,tone));
   }
   mesh.receiveShadow = true;
+  mesh.castShadow = detail===0;
   mesh.computeBoundingSphere();
   return mesh;
 }
@@ -289,40 +283,109 @@ export function createLandscape(scene) {
   const bankPosition=(s,d,side) => new THREE.Vector3(centerX(s)+side*(riverWidth(s)+d),groundHeight(s,d,side),-s);
   scene.add(mountains);
   const sections=new Map();
-  let previous = NaN;
+  const prepared=new Map();
+  let previous=NaN, pending=false;
+  let granite=[];
+  new GLTFLoader().load(assets+'granite.glb',gltf => {
+    gltf.scene.traverse(mesh => { if(mesh.isMesh) granite.push(mesh); });
+    for(const item of [...sections.values(),...prepared.values()]) addOutcrop(item);
+  });
 
+  function addOutcrop(item) {
+    if (!granite.length || item.detail>1 || item.outcrop) return;
+    const start=item.n*SECTION, random=rng(hash(start,111)*4294967295);
+    const source=granite[Math.floor(random()*granite.length)];
+    const count=9, mesh=new THREE.InstancedMesh(source.geometry,source.material,count);
+    const side=random()<0.50?-1:1, s0=start+SECTION*(0.33+0.34*random());
+    const transform=new THREE.Object3D();
+    for(let i=0;i<count;i++) {
+      const s=s0+(random()-0.5)*21;
+      const d=-1.4+random()*4.9;
+      const size=(i<3?3.8:1.1)+random()*(i<3?2.6:2.3);
+      transform.position.copy(bankPosition(s,d,side));
+      transform.position.y+=size*0.057;
+      transform.rotation.set((random()-0.5)*0.27,random()*TAU,(random()-0.5)*0.22);
+      transform.scale.set(size,size*(0.74+0.52*random()),size);
+      transform.updateMatrix();mesh.setMatrixAt(i,transform.matrix);
+    }
+    mesh.receiveShadow=true;mesh.castShadow=item.detail===0;
+    item.group.add(mesh);item.outcrop=mesh;
+  }
   function remove(item) {
     scene.remove(item.group);
+    item.job?.return();
     for (const mesh of item.group.children) {
       if (mesh.isInstancedMesh) mesh.dispose();
       else mesh.geometry.dispose();
+    }
+  }
+  function* build(item) {
+    const {n,detail,group}=item, start=n*SECTION;
+    const trees=nearTreeLayout(start,SECTION,bankPosition,rng(hash(start,442)*4294967295));
+    group.add(makeBanks(start,detail,materials.bank)); yield;
+    group.add(makeForest(start,detail,materials.trees,trees)); yield;
+    if (detail<2) group.add(makeRocks(start,detail,materials.rocks,rockShape));
+    if (detail===0) {
+      group.add(makeSedges(start,materials.grass)); yield;
+      const wood=yield* closeBankTrees(trees,start,SECTION,bankPosition,rng(hash(start,442)*4294967295),materials);
+      group.add(...wood);
+    }
+    addOutcrop(item);
+  }
+  function newSection(n,detail) {
+    const group=new THREE.Group();
+    group.name='Riverbank '+n+' LOD '+detail;
+    const item={n,detail,group};
+    item.job=build(item);
+    return item;
+  }
+  function detailAt(distance) {
+    return distance<=1 ? 0 : distance<=3 ? 1 : 2;
+  }
+  // Build the next four replacements off-scene in small idle slices. Ordinary
+  // section crossings only attach prepared buffers and retire the old sections.
+  function prepareNext(current) {
+    if(pending) return;
+    const next=current+1;
+    for(let n=next-2;n<=next+8;n++) {
+      const detail=detailAt(Math.abs(n-next));
+      if(sections.get(n)?.detail===detail || prepared.get(n)?.ready) continue;
+      const item=prepared.get(n) ?? newSection(n,detail);
+      prepared.set(n,item);pending=true;
+      const run=() => {
+        pending=false;
+        if(current!==previous || prepared.get(n)!==item) return;
+        item.ready=item.job.next().done;
+      };
+      if(window.requestIdleCallback) window.requestIdleCallback(run,{timeout:220});
+      else setTimeout(run,0);
+      return;
     }
   }
   function update(s, x = centerX(s)) {
     mountains.position.x=x;
     mountains.position.z=-s;
     const current=Math.floor(s/SECTION);
-    if (current === previous) return;
+    if(current===previous) {
+      if(s-current*SECTION>3) prepareNext(current);
+      return;
+    }
     previous=current;
     for(const [n,item] of sections) {
       if(n<current-2 || n>current+8) { remove(item); sections.delete(n); }
     }
     for(let n=current-2;n<=current+8;n++) {
-      const distance=Math.abs(n-current);
-      const detail=distance<=1 ? 0 : distance<=3 ? 1 : 2;
-      const old=sections.get(n);
+      const detail=detailAt(Math.abs(n-current)), old=sections.get(n);
       if(old?.detail===detail) continue;
-      const group=new THREE.Group(), start=n*SECTION;
-      group.name='Riverbank '+n+' LOD '+detail;
-      group.add(makeBanks(start,detail,materials.bank),makeForest(start,detail,materials.trees));
-      if (detail<2) group.add(makeRocks(start,detail,materials.rocks,rockShape));
-      if (detail===0) {
-        group.add(makeSedges(start,materials.grass));
-        group.add(...closeBankTrees(start,SECTION,bankPosition,rng(hash(start,442)*4294967295),materials));
-      }
+      const staged=prepared.get(n);
+      const item=staged?.detail===detail ? staged : newSection(n,detail);
+      if(item===staged) prepared.delete(n);
+      if(!item.ready) { while(!item.job.next().done) { /* first load or a jump */ } }
       if(old) remove(old);
-      scene.add(group);sections.set(n,{group,detail});
+      scene.add(item.group);sections.set(n,item);
     }
+    for(const item of prepared.values()) remove(item);
+    prepared.clear();
   }
   update(0);
   return { update };

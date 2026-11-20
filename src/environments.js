@@ -1,7 +1,12 @@
-import { centerX, riverWidth, createLandscape } from './landscape.js';
+import { centerX, riverWidth } from "./course.js";
 
-// Each river supplies its own course, shoreline and scenery to the same boat.
-export const pinebend = {
-  id: 'pinebend', name: 'Pinebend River', centerX, riverWidth, createLandscape,
-};
-export const environments = [pinebend];
+// The menu and controls can use the course before loading its 3D scenery.
+export const environments = [
+  {
+    id: "pinebend",
+    name: "Pinebend River",
+    centerX,
+    riverWidth,
+    loadLandscape: () => import("./landscape.js"),
+  },
+];

@@ -115,7 +115,10 @@ export function createPaddling({ centerX, riverWidth, onStroke = () => {}, onAct
     motion.leftPhase = active === 'left' ? phase : -1;
     motion.rightPhase = active === 'right' ? phase : -1;
     boost = clamp(boost * Math.exp(-0.7 * dt) + push * dt, 0, 2.4);
-    const limit = Math.max(1, riverWidth(motion.s) - 1.8);
+    // Reserve room for shallows, submerged timber and the bow as it swings
+    // farther out than the seat during a sustained turn.
+    const clearance = 3.4 + 2.1 * Math.abs(Math.sin(heading));
+    const limit = Math.max(1, riverWidth(motion.s) - clearance);
     const bank = clamp(across / limit, -1, 1);
     turnRate += (torque - 1.25 * turnRate - 0.32 * heading - 0.38 * bank ** 5) * dt;
     heading = clamp(heading + turnRate * dt, -0.88, 0.88);
@@ -123,7 +126,7 @@ export function createPaddling({ centerX, riverWidth, onStroke = () => {}, onAct
     const flow = 0.78 + 0.1 * Math.sin(motion.s * 0.027);
     motion.speed = flow + boost;
     motion.s += (flow + boost * Math.cos(heading)) * dt / Math.hypot(1, Math.tan(tangent(motion.s)));
-    const newLimit = Math.max(1, riverWidth(motion.s) - 1.8);
+    const newLimit = Math.max(1, riverWidth(motion.s) - clearance);
     across = clamp(across + (Math.sin(heading) * (boost + 0.32) - 0.55 * bank ** 5) * dt, -newLimit, newLimit);
     motion.x = centerX(motion.s) + across;
     motion.across = across / newLimit;

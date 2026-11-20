@@ -1,26 +1,75 @@
-import * as THREE from 'three';
-import { Water } from 'three/addons/objects/Water.js';
+import * as THREE from "three";
+import { Water } from "three/addons/objects/Water.js";
 
 export function createRiverWater(scene, env, sunDirection) {
-  const rows=138, cols=9, step=3.5;
+  const rows = 138,
+    cols = 9,
+    step = 3.5;
   const geometry = new THREE.BufferGeometry();
-  const positions = new THREE.Float32BufferAttribute(new Float32Array(rows*cols*3),3);
-  const shores = new THREE.Float32BufferAttribute(new Float32Array(rows*cols),1);
-  const indices=[];
-  for(let r=0;r<rows-1;r++)for(let c=0;c<cols-1;c++){
-    const a=r*cols+c;indices.push(a,a+1,a+cols,a+1,a+cols+1,a+cols);
-  }
-  geometry.setAttribute('position',positions);geometry.setAttribute('bankDistance',shores);geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-  const water = new Water(geometry,{textureWidth:768, textureHeight:512, clipBias:.001, sunDirection, sunColor:0xffe6b1,waterColor:0x234e43,distortionScale:.65});
-  const mat=water.material;
-  const spots=Array.from({length:6},()=>new THREE.Vector4(0,0,-100,0));
-  const stones=new THREE.TextureLoader().load('/assets/terrain/dry_river_pebbles.webp');
-  stones.wrapS=stones.wrapT=THREE.RepeatWrapping;stones.colorSpace=THREE.SRGBColorSpace;
-  Object.assign(mat.uniforms,{rings:{value:spots},boat:{value:new THREE.Vector4()},stones:{value:stones}});
-  mat.vertexShader='attribute float bankDistance; varying float shore;\n'+mat.vertexShader.replace('worldPosition = mirrorCoord.xyzw;', 'worldPosition = mirrorCoord.xyzw; shore = bankDistance;');
-  mat.fragmentShader='uniform vec4 rings[6]; uniform vec4 boat; uniform sampler2D stones; varying float shore;\n'+mat.fragmentShader;
-  mat.fragmentShader=mat.fragmentShader.replace('vec4 noise = getNoise( worldPosition.xz * size );',`
+  const positions = new THREE.Float32BufferAttribute(
+    new Float32Array(rows * cols * 3),
+    3,
+  );
+  const shores = new THREE.Float32BufferAttribute(
+    new Float32Array(rows * cols),
+    1,
+  );
+  const indices = [];
+  for (let r = 0; r < rows - 1; r++)
+    for (let c = 0; c < cols - 1; c++) {
+      const a = r * cols + c;
+      indices.push(a, a + 1, a + cols, a + 1, a + cols + 1, a + cols);
+    }
+  geometry.setAttribute("position", positions);
+  geometry.setAttribute("bankDistance", shores);
+  geometry.setIndex(indices);
+  const normals = new THREE.Float32BufferAttribute(
+    new Float32Array(rows * cols * 3),
+    3,
+  );
+  for (let i = 0; i < normals.count; i++) normals.setZ(i, 1);
+  geometry.setAttribute("normal", normals);
+  const water = new Water(geometry, {
+    textureWidth: 768,
+    textureHeight: 512,
+    clipBias: 0.001,
+    sunDirection,
+    sunColor: 0xffe6b1,
+    waterColor: 0x234e43,
+    distortionScale: 0.65,
+  });
+  const mat = water.material;
+  const spots = Array.from(
+    { length: 6 },
+    () => new THREE.Vector4(0, 0, -100, 0),
+  );
+  const stones = new THREE.TextureLoader().load(
+    "/assets/terrain/dry_river_pebbles.webp",
+  );
+  stones.wrapS = stones.wrapT = THREE.RepeatWrapping;
+  stones.colorSpace = THREE.SRGBColorSpace;
+  const waveMap = new THREE.TextureLoader().load("/assets/water-slopes.png");
+  waveMap.wrapS = waveMap.wrapT = THREE.RepeatWrapping;
+  waveMap.anisotropy = 4;
+  Object.assign(mat.uniforms, {
+    waveMap: { value: waveMap },
+    rings: { value: spots },
+    boat: { value: new THREE.Vector4() },
+    stones: { value: stones },
+  });
+  mat.vertexShader =
+    "attribute float bankDistance; varying float shore;\n" +
+    mat.vertexShader.replace(
+      "worldPosition = mirrorCoord.xyzw;",
+      "worldPosition = mirrorCoord.xyzw; shore = bankDistance;",
+    );
+  mat.fragmentShader =
+    "uniform sampler2D waveMap; uniform vec4 rings[6]; uniform vec4 boat; uniform sampler2D stones; varying float shore;\n" +
+    mat.fragmentShader;
+  mat.fragmentShader = mat.fragmentShader
+    .replace(
+      "vec4 noise = getNoise( worldPosition.xz * size );",
+      `
     vec2 p = worldPosition.xz;
     // Remove the water surface inside the open hull at its waterline.
     vec2 d=p-boat.xy;
@@ -42,6 +91,10 @@ export function createRiverWater(scene, env, sunDirection) {
               +vec2(.017,.011)*cos(dot(p,vec2(4.4,1.7))+bend-time*.78)
               +glide*(vec2(.009,.024)*cos(dot(p,vec2(5.9,14.5))+3.*bend+time*2.05)
               +vec2(-.01,.014)*cos(dot(p,vec2(-10.7,19.7))+4.*bend+time*2.65));
+    vec2 current=vec2(sin(p.y*.07)*.17,-.38);
+    vec2 eddy=(texture2D(waveMap,(p-current*time)/6.9).rg-.5);
+    vec2 capillary=texture2D(waveMap,p*.46+eddy*.06+vec2(time*.008,time*.067)).rg-.5;
+    slope=slope*.64+eddy*.19+capillary*.088;
     for(int i=0;i<6;i++){
       float age=time-rings[i].z;
       if(age>=0. && age<4.){
@@ -55,36 +108,60 @@ export function createRiverWater(scene, env, sunDirection) {
       float offset=abs(local.x)-trail*.26-.25;
       slope.y+=.04*cos(offset*15.)*exp(-offset*offset*5.-trail*.28);
     }
-    vec4 noise=vec4(slope.x, slope.y,1.,1.);`).replace('float rf0 = 0.3;', 'float rf0 = 0.085;')
-    .replace('vec3 outgoingLight = albedo;',`
+    vec4 noise=vec4(slope.x, slope.y,1.,1.);`,
+    )
+    .replace("float rf0 = 0.3;", "float rf0 = 0.085;")
+    .replace(
+      "vec3 outgoingLight = albedo;",
+      `
     float shallow=exp(-max(0.,shore)*.5);
     vec3 bed=texture2D(stones,p*.53+slope*.13).rgb;
     vec3 under=mix(vec3(.016,.067,.057),bed*vec3(.60,.67,.49),shallow);
     float grazing=.10+.86*pow(1.-max(dot(eyeDirection,surfaceNormal),0.),3.8);
-    vec3 outgoingLight=mix(under,reflectionSample,grazing)+specularLight*.38;
-    `);
-  water.rotation.x=-Math.PI/2;scene.add(water);
-  let chunk=NaN, nextRing=0;
+    vec3 halfway=normalize(sunDirection+eyeDirection);
+    float sunGlint=pow(max(0.,dot(surfaceNormal,halfway)),1850.);
+    float sunlightAtSurface = getShadowMask();
+    vec3 outgoingLight=mix(under*mix(.70,1.,sunlightAtSurface),reflectionSample,grazing)
+      +sunColor*(specularLight*.16+sunGlint*.76)*sunlightAtSurface;
+    `,
+    );
+  water.rotation.x = -Math.PI / 2;
+  water.receiveShadow = true;
+  scene.add(water);
+  let chunk = NaN,
+    nextRing = 0;
   return {
-    update(time,m,heave) {
-      const index=Math.floor(m.s/28);
-      if(index!==chunk){
-        chunk=index;
-        for(let r=0;r<rows;r++){
-          const s=chunk*28-67+r*step,half=env.riverWidth(s),mid=env.centerX(s);
-          for(let c=0;c<cols;c++){
-            const cross=(c/(cols-1)*2-1)*(half+1.6),i=r*cols+c;
-            positions.setXYZ(i,mid+cross,s,0);shores.setX(i,half-Math.abs(cross));
+    update(time, m, heave) {
+      const index = Math.floor(m.s / 28);
+      if (index !== chunk) {
+        chunk = index;
+        for (let r = 0; r < rows; r++) {
+          const s = chunk * 28 - 67 + r * step,
+            half = env.riverWidth(s),
+            mid = env.centerX(s);
+          for (let c = 0; c < cols; c++) {
+            const cross = ((c / (cols - 1)) * 2 - 1) * (half + 1.6),
+              i = r * cols + c;
+            positions.setXYZ(i, mid + cross, s, 0);
+            shores.setX(i, half - Math.abs(cross));
           }
         }
-        positions.needsUpdate=shores.needsUpdate=true;geometry.computeBoundingSphere();
+        positions.needsUpdate = shores.needsUpdate = true;
+        geometry.computeBoundingSphere();
       }
-      mat.uniforms.time.value=time;mat.uniforms.boat.value.set(m.x,-m.s,m.yaw,heave);
+      mat.uniforms.time.value = time;
+      mat.uniforms.boat.value.set(m.x, -m.s, m.yaw, heave);
     },
-    stroke(side,strength,time,m) {
-      const x=side==='left'?-.72:.72,z=-1.28;
-      spots[nextRing].set(m.x+x*Math.cos(m.yaw)+z*Math.sin(m.yaw),-m.s-x*Math.sin(m.yaw)+z*Math.cos(m.yaw),time,strength);
-      nextRing=(nextRing+1)%spots.length;
-    }
+    stroke(side, strength, time, m) {
+      const x = side === "left" ? -0.72 : 0.72,
+        z = -1.28;
+      spots[nextRing].set(
+        m.x + x * Math.cos(m.yaw) + z * Math.sin(m.yaw),
+        -m.s - x * Math.sin(m.yaw) + z * Math.cos(m.yaw),
+        time,
+        strength,
+      );
+      nextRing = (nextRing + 1) % spots.length;
+    },
   };
 }
