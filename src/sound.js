@@ -20,7 +20,7 @@ function noiseLoop(ctx) {
   return buffer;
 }
 
-export function createSound() {
+export function createSound({ onStateChange = () => {} } = {}) {
   let ctx, output, wind, windFilter, bed;
   let muted = false, paused = false, volume = 0.8;
   let elapsed = 0, nextMix = 0, nextBird = 1.1, lastStroke = -1, previousPhrase = -1;
@@ -80,7 +80,9 @@ export function createSound() {
         if (!abort.signal.aborted) console.warn('River audio', error);
       });
     }
+    ctx.addEventListener('statechange', onStateChange);
     refreshLevel();
+    onStateChange();
   }
 
   function start() {
@@ -175,6 +177,7 @@ export function createSound() {
 
   return {
     start, update, stroke,
+    get isBlocked() { return Boolean(ctx && ctx.state !== 'running'); },
     setMuted(value) { muted = Boolean(value); refreshLevel(); },
     setVolume(value) { volume = clamp(value, 0, 1); refreshLevel(); },
     setPaused(value) { paused = Boolean(value); refreshLevel(); },
@@ -184,6 +187,7 @@ export function createSound() {
       window.removeEventListener('keydown', unlock, true);
       document.removeEventListener('visibilitychange', refreshLevel);
       const audio = ctx;
+      audio?.removeEventListener('statechange', onStateChange);
       ctx = null;
       buffers.clear();
       audio?.close().catch(() => {});
