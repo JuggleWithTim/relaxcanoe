@@ -140,6 +140,15 @@ export function createPaddling({ centerX, riverWidth, onStroke = () => {}, onAct
   window.addEventListener('blur', clear);
   return {
     update, touch, clear, motion,
+    resumeFromVR() {
+      across = motion.x - centerX(motion.s);
+      const riverYaw = -tangent(motion.s);
+      const difference = motion.yaw - riverYaw;
+      motion.yaw = riverYaw + Math.atan2(Math.sin(difference), Math.cos(difference));
+      heading = clamp(riverYaw - motion.yaw, -0.88, 0.88);
+      boost = turnRate = 0;
+      clear();
+    },
     dispose() {
       window.removeEventListener('keydown', keydown);
       window.removeEventListener('keyup', keyup);

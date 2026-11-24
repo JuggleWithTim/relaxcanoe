@@ -73,5 +73,5 @@ export async function createCanoe(scene) {
     paddle.position.lerp(target, blend);
     paddle.quaternion.slerp(rotation, blend);
   }
-  return { group, update };
+  return { group, paddle, update };
 }

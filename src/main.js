@@ -1,5 +1,6 @@
 import { environments } from "./environments.js";
 import { createPaddling } from "./paddling.js";
+import { createVRMotion } from "./vr-motion.js";
 import { createSound } from "./sound.js";
 import { drawChart } from "./chart.js";
 
@@ -7,6 +8,7 @@ const env = environments[0];
 const el = (id) => document.getElementById(id);
 const root = el("experience"),
   enter = el("enter"),
+  enterVR = el("enter-vr"),
   pauseButton = el("pause-btn"),
   soundButton = el("sound-toggle");
 root.dataset.river = env.id;
@@ -56,40 +58,72 @@ function syncSound() {
   );
   soundButton.setAttribute("aria-pressed", String(!muted && !blocked));
 }
-async function begin() {
+const vrMotion = createVRMotion(env);
+let session = null;
+async function begin(immersive = false) {
   if (loading || document.hidden || mode === "playing") return;
-  sound.start();
-  sound.setPaused(false);
-  if (!world) {
-    loading = true;
-    enter.disabled = true;
-    enter.querySelector("span").textContent = "Opening river…";
-    el("status").textContent = "";
-    try {
+  loading = enter.disabled = enterVR.disabled = true;
+  el("status").textContent = "";
+  let requested;
+  try {
+    sound.start();
+    if (immersive) {
+      // Request from the click itself, while transient user activation is live.
+      requested = session = await navigator.xr.requestSession("immersive-vr", {
+        optionalFeatures: ["hand-tracking"],
+      });
+      session.addEventListener("end", leaveVR, { once: true });
+      session.addEventListener("visibilitychange", onVRVisibility);
+      vrMotion.reset();
+      controls.clear();
+    }
+    sound.setPaused(false);
+    if (!world) {
+      enter.querySelector("span").textContent = "Opening river…";
       const { createWorld } = await import("./world.js");
-      world = await createWorld(el("world"), env);
-      world.render(0, controls.motion);
-    } catch (error) {
-      console.error("River initialization failed", error);
-      world = undefined;
-      el("world").replaceChildren();
-      el("status").textContent = /webgl|context/i.test(String(error))
+      world = await createWorld(el("world"), env, immersive);
+      cancelAnimationFrame(menuFrame);
+      world.setAnimationLoop(frame);
+    }
+    if (immersive) {
+      if (requested !== session) return;
+      await world.startVR(session);
+      if (requested !== session) return;
+      onVRVisibility();
+    } else if (document.hidden) {
+      pause();
+      return;
+    }
+    last = performance.now();
+    setMode("playing");
+    if (!immersive) pauseButton.focus({ preventScroll: true });
+  } catch (error) {
+    console.error("Canoe launch failed", error);
+    if (session) await session.end().catch(() => {});
+    if (!world) el("world").replaceChildren();
+    sound.setPaused(true);
+    el("status").textContent = immersive
+      ? "VR could not start. Check headset permissions and try Enter VR again."
+      : /webgl|context/i.test(String(error))
         ? "The river needs WebGL 2. Enable graphics acceleration and try again."
         : "Some river assets could not load. Check your connection and try again.";
-      enter.querySelector("span").textContent = "Retry canoeing";
-      sound.setPaused(true);
-      return;
-    } finally {
-      loading = false;
-      enter.disabled = false;
-    }
+  } finally {
+    loading = enter.disabled = enterVR.disabled = false;
+    if (mode !== "playing") enter.querySelector("span").textContent = world ? "Resume canoeing" : "Begin canoeing";
   }
-  if (document.hidden) {
-    pause();
-    return;
-  }
-  setMode("playing");
-  pauseButton.focus({ preventScroll: true });
+}
+function leaveVR(event) {
+  if (event.target !== session) return;
+  session.removeEventListener("visibilitychange", onVRVisibility);
+  session = null;
+  controls.resumeFromVR();
+  if (world) pause();
+  else sound.setPaused(true);
+}
+function onVRVisibility() {
+  world?.resetHands();
+  last = performance.now();
+  sound.setPaused(session.visibilityState !== "visible");
 }
 function pause() {
   if (!world) return;
@@ -99,22 +133,34 @@ function pause() {
 }
 const controls = createPaddling({
   ...env,
-  onActivate: begin,
+  onActivate: () => begin(),
   onStroke(side, strength) {
     sound.stroke(side, strength);
     world?.stroke(side, strength, controls.motion);
   },
 });
-enter.addEventListener("click", begin);
-pauseButton.addEventListener("click", pause);
+enter.addEventListener("click", () => begin());
+enterVR.addEventListener("click", () => begin(true));
+async function detectVR() {
+  try {
+    const supported = await navigator.xr?.isSessionSupported("immersive-vr");
+    enterVR.hidden = el("vr-guide").hidden = !supported;
+  } catch {
+    enterVR.hidden = el("vr-guide").hidden = true;
+  }
+}
+detectVR();
+navigator.xr?.addEventListener("devicechange", detectVR);
+pauseButton.addEventListener("click", () => session ? session.end() : pause());
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && mode === "playing") {
     e.preventDefault();
-    pause();
+    if (session) session.end();
+    else pause();
   }
 });
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && mode === "playing") pause();
+  if (!session && document.hidden && mode === "playing") pause();
 });
 let unlocking = false;
 for (const event of ["pointerdown", "keydown"])
@@ -166,14 +212,35 @@ for (const button of el("touch-controls").querySelectorAll("button")) {
 }
 drawChart(el("chart"), env.centerX, env.riverWidth);
 let last = performance.now();
-function frame(now) {
-  requestAnimationFrame(frame);
+function frame(now, xrFrame) {
   const interval = Math.max(0, (now - last) / 1000);
   last = now;
-  const dt = Math.min(0.09, interval),
-    play = mode === "playing" && !document.hidden;
-  const motion = controls.update(dt, play);
-  if (play) world.render(dt, motion, interval);
-  sound.update(dt, motion);
+  const dt = Math.min(0.09, interval);
+  if (xrFrame) {
+    if (mode !== "playing" || session?.visibilityState !== "visible") return;
+    const blade = world.samplePaddle(xrFrame, interval);
+    if (blade === undefined) return; // Await a calibrated, tracked viewer pose.
+    const motion = controls.motion;
+    if (blade?.entry) {
+      const side = blade.position.x < 0 ? "left" : "right";
+      const strength = Math.min(1, 0.25 + blade.velocity.length() * 0.3);
+      sound.stroke(side, strength);
+      world.stroke(side, strength, motion, blade.position);
+    }
+    vrMotion.update(motion, dt, blade);
+    world.render(dt, motion);
+    sound.update(dt, motion);
+  } else if (!session) {
+    const play = mode === "playing" && !document.hidden;
+    const motion = controls.update(dt, play);
+    if (play) world.render(dt, motion, interval);
+    sound.update(dt, motion);
+  }
 }
-requestAnimationFrame(frame);
+// Poll gamepads on the arrival screen before the lazy-loaded renderer exists.
+let menuFrame;
+function pollMenu(now) {
+  frame(now);
+  menuFrame = requestAnimationFrame(pollMenu);
+}
+menuFrame = requestAnimationFrame(pollMenu);

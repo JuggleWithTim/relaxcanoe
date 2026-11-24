@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { Water } from "three/addons/objects/Water.js";
 
-export function createRiverWater(scene, env, sunDirection) {
+export function createRiverWater(scene, env, sunDirection, sky) {
   const rows = 138,
     cols = 9,
     step = 3.5;
@@ -53,6 +53,8 @@ export function createRiverWater(scene, env, sunDirection) {
   waveMap.anisotropy = 4;
   Object.assign(mat.uniforms, {
     waveMap: { value: waveMap },
+    immersive: { value: false },
+    skyMap: { value: sky },
     rings: { value: spots },
     boat: { value: new THREE.Vector4() },
     stones: { value: stones },
@@ -64,7 +66,7 @@ export function createRiverWater(scene, env, sunDirection) {
       "worldPosition = mirrorCoord.xyzw; shore = bankDistance;",
     );
   mat.fragmentShader =
-    "uniform sampler2D waveMap; uniform vec4 rings[6]; uniform vec4 boat; uniform sampler2D stones; varying float shore;\n" +
+    "uniform bool immersive; uniform sampler2D skyMap; uniform sampler2D waveMap; uniform vec4 rings[6]; uniform vec4 boat; uniform sampler2D stones; varying float shore;\n" +
     mat.fragmentShader;
   mat.fragmentShader = mat.fragmentShader
     .replace(
@@ -110,6 +112,14 @@ export function createRiverWater(scene, env, sunDirection) {
     }
     vec4 noise=vec4(slope.x, slope.y,1.,1.);`,
     )
+    .replace("eye-worldPosition.xyz", "cameraPosition-worldPosition.xyz")
+    .replace("float theta =", `
+      if (immersive) {
+        vec3 ray = reflect(-eyeDirection, surfaceNormal);
+        vec2 uv = vec2(atan(ray.z, ray.x)*.15915494+.522, asin(clamp(ray.y,-1.,1.))*.31830989+.5);
+        reflectionSample = mix(texture2D(skyMap,uv).rgb, vec3(.17,.24,.19), .55*exp(-5.*abs(ray.y)));
+      }
+      float theta =`)
     .replace("float rf0 = 0.3;", "float rf0 = 0.085;")
     .replace(
       "vec3 outgoingLight = albedo;",
@@ -125,18 +135,23 @@ export function createRiverWater(scene, env, sunDirection) {
       +sunColor*(specularLight*.16+sunGlint*.76)*sunlightAtSurface;
     `,
     );
+  const reflectScene = water.onBeforeRender;
+  water.onBeforeRender = function (renderer, scene, camera) {
+    if (!renderer.xr.isPresenting) reflectScene.call(this, renderer, scene, camera);
+  };
   water.rotation.x = -Math.PI / 2;
   water.receiveShadow = true;
   scene.add(water);
   let chunk = NaN,
     nextRing = 0;
   return {
-    update(time, m, heave) {
+    update(time, m, heave, immersive) {
       const index = Math.floor(m.s / 28);
-      if (index !== chunk) {
+      if (index !== chunk || mat.uniforms.immersive.value !== immersive) {
         chunk = index;
+        mat.uniforms.immersive.value = immersive;
         for (let r = 0; r < rows; r++) {
-          const s = chunk * 28 - 67 + r * step,
+          const s = chunk * 28 + (immersive ? (r - rows / 2) * 5.5 : r * step - 67),
             half = env.riverWidth(s),
             mid = env.centerX(s);
           for (let c = 0; c < cols; c++) {
@@ -152,9 +167,9 @@ export function createRiverWater(scene, env, sunDirection) {
       mat.uniforms.time.value = time;
       mat.uniforms.boat.value.set(m.x, -m.s, m.yaw, heave);
     },
-    stroke(side, strength, time, m) {
-      const x = side === "left" ? -0.72 : 0.72,
-        z = -1.28;
+    stroke(side, strength, time, m, contact) {
+      const x = contact?.x ?? (side === "left" ? -0.72 : 0.72),
+        z = contact?.z ?? -1.28;
       spots[nextRing].set(
         m.x + x * Math.cos(m.yaw) + z * Math.sin(m.yaw),
         -m.s - x * Math.sin(m.yaw) + z * Math.cos(m.yaw),

@@ -268,7 +268,7 @@ function makeMountains() {
   return backdrop;
 }
 
-export function createLandscape(scene) {
+export function createLandscape(scene, immersive = false) {
   const materials = createMaterials();
   const rockShape = makeRockGeometry(29);
   const mountains=makeMountains();
@@ -284,7 +284,8 @@ export function createLandscape(scene) {
   scene.add(mountains);
   const sections=new Map();
   const prepared=new Map();
-  let previous=NaN, pending=false;
+  let previous=NaN, pending=false, lastStation=0;
+  let upstreamSections = immersive ? 8 : 2;
   let granite=[];
   new GLTFLoader().load(assets+'granite.glb',gltf => {
     gltf.scene.traverse(mesh => { if(mesh.isMesh) granite.push(mesh); });
@@ -340,17 +341,21 @@ export function createLandscape(scene) {
     return item;
   }
   function detailAt(distance) {
+    if (immersive) return distance <= 2 ? 1 : 2;
     return distance<=1 ? 0 : distance<=3 ? 1 : 2;
   }
-  // Build the next four replacements off-scene in small idle slices. Ordinary
+  // Build upcoming replacements off-scene in small idle slices. Ordinary
   // section crossings only attach prepared buffers and retire the old sections.
-  function prepareNext(current) {
+  function prepareNext(current, direction) {
     if(pending) return;
-    const next=current+1;
-    for(let n=next-2;n<=next+8;n++) {
+    const next=current+direction;
+    for(let n=next-upstreamSections;n<=next+8;n++) {
       const detail=detailAt(Math.abs(n-next));
-      if(sections.get(n)?.detail===detail || prepared.get(n)?.ready) continue;
-      const item=prepared.get(n) ?? newSection(n,detail);
+      if(sections.get(n)?.detail===detail) continue;
+      const staged=prepared.get(n);
+      if(staged?.detail===detail && staged.ready) continue;
+      if(staged && staged.detail!==detail) remove(staged);
+      const item=staged?.detail===detail ? staged : newSection(n,detail);
       prepared.set(n,item);pending=true;
       const run=() => {
         pending=false;
@@ -362,19 +367,29 @@ export function createLandscape(scene) {
       return;
     }
   }
-  function update(s, x = centerX(s)) {
+  function update(s, x = centerX(s), inVR = immersive) {
+    if (inVR !== immersive) {
+      immersive = inVR;
+      upstreamSections = immersive ? 8 : 2;
+      previous = NaN;
+      for (const item of prepared.values()) remove(item);
+      prepared.clear();
+    }
     mountains.position.x=x;
     mountains.position.z=-s;
     const current=Math.floor(s/SECTION);
+    const direction = s < lastStation ? -1 : 1;
+    lastStation = s;
     if(current===previous) {
-      if(s-current*SECTION>3) prepareNext(current);
+      const progress = s-current*SECTION;
+      if(direction > 0 ? progress > 3 : progress < SECTION-3) prepareNext(current, direction);
       return;
     }
     previous=current;
     for(const [n,item] of sections) {
-      if(n<current-2 || n>current+8) { remove(item); sections.delete(n); }
+      if(n<current-upstreamSections || n>current+8) { remove(item); sections.delete(n); }
     }
-    for(let n=current-2;n<=current+8;n++) {
+    for(let n=current-upstreamSections;n<=current+8;n++) {
       const detail=detailAt(Math.abs(n-current)), old=sections.get(n);
       if(old?.detail===detail) continue;
       const staged=prepared.get(n);

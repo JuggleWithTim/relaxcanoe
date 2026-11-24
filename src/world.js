@@ -2,8 +2,9 @@ import * as THREE from "three";
 import { createCanoe } from "./canoe.js";
 import { createAtmosphere } from "./atmosphere.js";
 import { createRiverWater } from "./water.js";
+import { createVR } from "./vr.js";
 
-export async function createWorld(container, env) {
+export async function createWorld(container, env, startInVR = false) {
   const renderer = new THREE.WebGLRenderer({
     antialias: true,
     alpha: false,
@@ -50,16 +51,24 @@ export async function createWorld(container, env) {
   scene.add(sunlight, sunlight.target);
   scene.add(new THREE.HemisphereLight(0xe4e8ec, 0x6d7557, 1.22));
   const { createLandscape } = await env.loadLandscape();
-  const banks = createLandscape(scene);
-  const river = createRiverWater(scene, env, sunDirection);
+  const banks = createLandscape(scene, startInVR);
+  const river = createRiverWater(scene, env, sunDirection, sky);
   const canoe = await createCanoe(scene);
+  const rig = new THREE.Group();
+  scene.add(rig);
+  // XR owns this camera's local pose. Keep the desktop camera independent.
+  const headset = camera.clone();
+  rig.add(headset);
+  const vr = createVR(renderer, rig, canoe.paddle);
   const resize = () => {
+    if (renderer.xr.isPresenting) return;
     const w = container.clientWidth,
       h = container.clientHeight;
     renderer.setSize(w, h, false);
     camera.aspect = w / Math.max(1, h);
     camera.updateProjectionMatrix();
   };
+  renderer.xr.addEventListener("sessionend", resize);
   new ResizeObserver(resize).observe(container);
   resize();
   container.append(renderer.domElement);
@@ -103,10 +112,12 @@ export async function createWorld(container, env) {
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
   function render(dt, m, frameInterval = 0) {
     seconds += dt;
-    const bob = reduced
+    const immersive = renderer.xr.isPresenting;
+    renderer.shadowMap.enabled = !immersive;
+    const bob = reduced || immersive
       ? 0
       : 0.009 * Math.sin(seconds * 1.08) + 0.004 * Math.sin(seconds * 1.9);
-    const rocking = reduced
+    const rocking = reduced || immersive
       ? 0
       : 0.005 * Math.sin(seconds * 0.85) + m.roll * 0.52;
     // Keep the small shadow frustum near the paddler. Snap to shadow texels
@@ -120,13 +131,19 @@ export async function createWorld(container, env) {
     sunlight.position
       .copy(sunlight.target.position)
       .addScaledVector(sunDirection, 52);
-    banks.update(m.s, m.x);
+    banks.update(m.s, m.x, immersive);
     atmosphere(m.s, m.x, seconds);
     canoe.group.position.set(m.x, bob, -m.s);
     canoe.group.rotation.order = "YXZ";
     canoe.group.rotation.set(0, m.yaw, rocking);
-    canoe.update(seconds, m.leftPhase, m.rightPhase);
-    river.update(seconds, m, bob);
+    if (!immersive) canoe.update(seconds, m.leftPhase, m.rightPhase);
+    river.update(seconds, m, bob, immersive);
+    if (immersive) {
+      rig.position.copy(canoe.group.position);
+      rig.rotation.y = m.yaw;
+      renderer.render(scene, headset);
+      return;
+    }
     const ease = 1 - Math.exp(-5 * dt);
     lookX += (desiredX - lookX) * ease;
     lookY += (desiredY - lookY) * ease;
@@ -156,6 +173,10 @@ export async function createWorld(container, env) {
   }
   return {
     render,
-    stroke: (side, strength, m) => river.stroke(side, strength, seconds, m),
+    startVR: session => renderer.xr.setSession(session),
+    samplePaddle: vr.sample,
+    resetHands: vr.resetHands,
+    setAnimationLoop: callback => renderer.setAnimationLoop(callback),
+    stroke: (side, strength, m, contact) => river.stroke(side, strength, seconds, m, contact),
   };
 }

@@ -282,6 +282,16 @@ button {
 .enter:active {
   transform: translateY(1px);
 }
+#enter-vr {
+  margin-left: 6px;
+  background: #29372e;
+  color: #f3e3c2;
+}
+#vr-guide {
+  max-width: 380px;
+  margin: 10px 0 0;
+  font-size: 0.85rem;
+}
 #status {
   position: absolute;
   bottom: -31px;
